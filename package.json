@@ -1,0 +1,12 @@
+{
+  "name": "bug",
+  "version": "0.1.0",
+  "description": "Fetch Buganizer / issuetracker.google.com issues via authenticated headless Chromium.",
+  "type": "module",
+  "bin": {
+    "bug": "./bug.js"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}
