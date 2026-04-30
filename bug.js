@@ -8,11 +8,23 @@
 //   bug --help
 
 import { chromium } from 'playwright';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PROFILE_DIR = join(homedir(), '.config', 'bug-cli', 'profile');
+const ISSUE_HOSTS = new Set([
+  'b.corp.google.com',
+  'crbug.com',
+  'issues.chromium.org',
+  'issuetracker.google.com',
+]);
+const CLUSTERFUZZ_HOST = 'clusterfuzz.com';
+
+const ANSI_ESCAPE_RE =
+  /\x1B(?:\][^\x07]*(?:\x07|\x1B\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g;
+const TERMINAL_CONTROL_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
 
 // ---------- arg parsing ----------
 
@@ -32,6 +44,7 @@ Usage:
 Flags:
   -v, --verbose                          Markdown: more detail. For issues, include metadata-only comments and per-comment Changes lists. For cf testcases, include URL, crash header, environment, and full stacktrace.
   --debug                                Include raw page text in output.
+  --debug-screenshot=path                Write a ClusterFuzz debug screenshot to an explicit path.
   --no-color                             Disable ANSI color in markdown output.
   -h, --help                             Show this help.
 `);
@@ -45,30 +58,68 @@ function parseArgs(argv) {
     else if (a === '--no-color') args.noColor = true;
     else if (a === '--verbose' || a === '-v') args.verbose = true;
     else if (a.startsWith('--format=')) args.format = a.slice('--format='.length);
+    else if (a.startsWith('--debug-screenshot=')) {
+      args.debugScreenshot = a.slice('--debug-screenshot='.length);
+    }
     else args._.push(a);
   }
   return args;
 }
 
+function parseHttpUrl(input, kind) {
+  let url;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new Error(`Cannot interpret as ${kind}: ${input}`);
+  }
+  if (url.protocol !== 'https:') {
+    throw new Error(`Only https URLs are supported for ${kind}: ${input}`);
+  }
+  return url;
+}
+
+function isIssueUrl(url) {
+  return url.protocol === 'https:' && ISSUE_HOSTS.has(url.hostname);
+}
+
+function assertIssueUrl(url) {
+  if (!isIssueUrl(url)) {
+    throw new Error(`Unsupported issue host: ${url.hostname}`);
+  }
+}
+
 function resolveIssueUrl(input) {
-  if (/^https?:\/\//.test(input)) return input;
+  if (/^https?:\/\//.test(input)) {
+    const url = parseHttpUrl(input, 'issue URL');
+    assertIssueUrl(url);
+    return url.href;
+  }
   if (/^\d+$/.test(input)) return `https://issuetracker.google.com/issues/${input}`;
   throw new Error(`Cannot interpret as issue id or url: ${input}`);
 }
 
 function resolveTestcaseKey(input) {
   if (/^\d+$/.test(input)) return input;
-  const m = input.match(/[?&](?:key|testcase_id)=(\d+)/);
-  if (m) return m[1];
+  const url = parseHttpUrl(input, 'clusterfuzz testcase URL');
+  if (url.hostname !== CLUSTERFUZZ_HOST) {
+    throw new Error(`Unsupported ClusterFuzz host: ${url.hostname}`);
+  }
+  const key = url.searchParams.get('key') ?? url.searchParams.get('testcase_id');
+  if (key && /^\d+$/.test(key)) return key;
   throw new Error(`Cannot interpret as clusterfuzz testcase key or url: ${input}`);
 }
 
 function resolveCfTarget(input) {
-  if (/^https?:\/\/clusterfuzz\.com\//.test(input)) {
-    return { kind: 'testcase', key: resolveTestcaseKey(input) };
-  }
-  if (/^https?:\/\/(?:issuetracker\.google\.com|issues\.chromium\.org|crbug\.com|b\.corp\.google\.com)/.test(input)) {
-    return { kind: 'issue', issue: input };
+  if (/^https?:\/\//.test(input)) {
+    const url = parseHttpUrl(input, 'clusterfuzz target URL');
+    if (url.hostname === CLUSTERFUZZ_HOST) {
+      return { kind: 'testcase', key: resolveTestcaseKey(input) };
+    }
+    if (isIssueUrl(url)) {
+      return { kind: 'issue', issue: url.href };
+    }
+    throw new Error(`Unsupported ClusterFuzz target host: ${url.hostname}`);
   }
   if (/^b\/\d+$/.test(input)) {
     return { kind: 'issue', issue: input.slice(2) };
@@ -88,6 +139,23 @@ function findTestcaseKeyInIssue(issue) {
   ].join('\n');
   const m = haystack.match(/clusterfuzz\.com\/(?:testcase\?key=|download\?testcase_id=)(\d+)/);
   return m ? m[1] : null;
+}
+
+function sanitizeTerminalText(value) {
+  return String(value)
+    .replace(ANSI_ESCAPE_RE, '')
+    .replace(TERMINAL_CONTROL_RE, '');
+}
+
+function sanitizeForTerminal(value) {
+  if (typeof value === 'string') return sanitizeTerminalText(value);
+  if (Array.isArray(value)) return value.map((item) => sanitizeForTerminal(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, sanitizeForTerminal(item)]),
+    );
+  }
+  return value;
 }
 
 // ---------- color ----------
@@ -142,6 +210,7 @@ async function fetchPageText(url) {
     if (/accounts\.google\.com/.test(page.url())) {
       throw new Error('Not logged in. Run `bug login` first.');
     }
+    assertIssueUrl(new URL(page.url()));
     await page.waitForSelector('h1, [role="heading"]', { timeout: 30_000 });
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
     return await page.evaluate(() => {
@@ -170,9 +239,9 @@ async function fetchTestcase(key, { debugScreenshot } = {}) {
     // Walk light + shadow DOM and emit a flat text representation.
     const text = await page.evaluate(() => {
       const BLOCK = new Set([
-        'P','DIV','SECTION','ARTICLE','HEADER','FOOTER','NAV','ASIDE',
-        'H1','H2','H3','H4','H5','H6','LI','TR','TD','TH','PRE','HR','BR',
-        'TABLE','BLOCKQUOTE','FIGURE','DETAILS','SUMMARY','LABEL',
+        'P', 'DIV', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER', 'NAV', 'ASIDE',
+        'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'TR', 'TD', 'TH', 'PRE', 'HR', 'BR',
+        'TABLE', 'BLOCKQUOTE', 'FIGURE', 'DETAILS', 'SUMMARY', 'LABEL',
       ]);
       function isVisible(el) {
         if (!(el instanceof Element)) return true;
@@ -496,6 +565,7 @@ function parseTestcase(tc, key) {
 }
 
 function renderTestcaseMarkdown(parsed, { color, verbose }) {
+  parsed = sanitizeForTerminal(parsed);
   const C = makeColors({ enabled: color });
   const out = [];
 
@@ -596,6 +666,7 @@ function flatten(v) {
 }
 
 function renderMarkdown(issue, { color, verbose }) {
+  issue = sanitizeForTerminal(issue);
   const C = makeColors({ enabled: color });
   const out = [];
   const sb = issue.sidebar;
@@ -742,16 +813,21 @@ async function main() {
     } else {
       key = target.key;
     }
+    if (args.debugScreenshot === '') {
+      throw new Error('--debug-screenshot requires a path.');
+    }
     const tc = await fetchTestcase(key, {
-      debugScreenshot: args.debug ? `/tmp/bug-cf-${key}.png` : null,
+      debugScreenshot: args.debugScreenshot ?? null,
     });
-    if (args.debug) console.error(`[debug] screenshot: /tmp/bug-cf-${key}.png`);
+    if (args.debugScreenshot) {
+      console.error(`[debug] screenshot: ${args.debugScreenshot}`);
+    }
     const parsed = parseTestcase(tc, key);
     if (args.debug) parsed.rawText = tc.text;
     if (args.format === 'json') {
       console.log(JSON.stringify(parsed, null, 2));
     } else if (args.format === 'text') {
-      console.log(tc.text);
+      console.log(sanitizeTerminalText(tc.text));
     } else if (args.format === 'markdown') {
       console.log(renderTestcaseMarkdown(parsed, { color: colorEnabled, verbose: !!args.verbose }));
     } else {
@@ -768,7 +844,7 @@ async function main() {
   if (args.format === 'json') {
     console.log(JSON.stringify(issue, null, 2));
   } else if (args.format === 'text') {
-    console.log(text);
+    console.log(sanitizeTerminalText(text));
   } else if (args.format === 'markdown') {
     console.log(renderMarkdown(issue, { color: colorEnabled, verbose: !!args.verbose }));
   } else {
@@ -776,7 +852,28 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err.message || err);
-  process.exit(1);
-});
+export {
+  findTestcaseKeyInIssue,
+  parseArgs,
+  parseIssue,
+  parseTestcase,
+  renderMarkdown,
+  renderTestcaseMarkdown,
+  resolveCfTarget,
+  resolveIssueUrl,
+  resolveTestcaseKey,
+  sanitizeForTerminal,
+  sanitizeTerminalText,
+};
+
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+}
+
+if (isMainModule()) {
+  main().catch((err) => {
+    console.error(sanitizeTerminalText(err.message || err));
+    process.exit(1);
+  });
+}
