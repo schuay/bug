@@ -102,9 +102,10 @@ hit any backend API. Instead:
 4. The clusterfuzz reproducer is downloaded as a separate authenticated
    request via Playwright's request context (avoids CORS).
 
-Issue URLs are accepted only for Buganizer / Chromium issue hosts, and
-ClusterFuzz URLs are accepted only for `clusterfuzz.com`. Human-readable output
-has terminal control sequences stripped before printing.
+Issue URLs are accepted only for Buganizer / Chromium issue hosts and are
+normalized by extracting the numeric issue id before navigation. ClusterFuzz
+URLs are accepted only for `clusterfuzz.com`. Human-readable output has
+terminal control sequences stripped before printing.
 
 ## Security notes
 

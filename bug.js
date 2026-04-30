@@ -89,13 +89,27 @@ function assertIssueUrl(url) {
   }
 }
 
+function canonicalIssueUrl(id) {
+  return `https://issuetracker.google.com/issues/${id}`;
+}
+
+function extractIssueIdFromUrl(url) {
+  const parts = url.pathname.split('/').filter(Boolean);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (/^\d+$/.test(parts[i])) return parts[i];
+  }
+  return null;
+}
+
 function resolveIssueUrl(input) {
+  if (/^\d+$/.test(input)) return canonicalIssueUrl(input);
   if (/^https?:\/\//.test(input)) {
     const url = parseHttpUrl(input, 'issue URL');
     assertIssueUrl(url);
-    return url.href;
+    const id = extractIssueIdFromUrl(url);
+    if (!id) throw new Error(`Cannot find issue id in url: ${input}`);
+    return canonicalIssueUrl(id);
   }
-  if (/^\d+$/.test(input)) return `https://issuetracker.google.com/issues/${input}`;
   throw new Error(`Cannot interpret as issue id or url: ${input}`);
 }
 
@@ -117,7 +131,7 @@ function resolveCfTarget(input) {
       return { kind: 'testcase', key: resolveTestcaseKey(input) };
     }
     if (isIssueUrl(url)) {
-      return { kind: 'issue', issue: url.href };
+      return { kind: 'issue', issue: resolveIssueUrl(input) };
     }
     throw new Error(`Unsupported ClusterFuzz target host: ${url.hostname}`);
   }
@@ -156,6 +170,31 @@ function sanitizeForTerminal(value) {
     );
   }
   return value;
+}
+
+function looksLikeIssueContent(text, id) {
+  const padded = `\n${text}\n`;
+  if (id && padded.includes(`\n${id}\nVisibility\n`)) return true;
+  return padded.includes('\nIssue metadata\n') ||
+    (padded.includes('\nDESCRIPTION\n') && padded.includes('\nCOMMENTS\n'));
+}
+
+function looksLikeAuthPrompt(text) {
+  return text.includes('Access is denied to this issue') &&
+    text.includes('Access to this issue may be resolved by signing in.');
+}
+
+function assertIssueContentAvailable({ url, text }) {
+  if (/accounts\.google\.com/.test(url)) {
+    throw new Error('Not logged in. Run `bug login` first.');
+  }
+
+  const id = extractIdFromUrl(url);
+  if (looksLikeIssueContent(text, id)) return;
+  if (looksLikeAuthPrompt(text)) {
+    throw new Error('Not logged in. Run `bug login` first.');
+  }
+  throw new Error('Issue content not available. Run `bug login` first or verify access to this issue.');
 }
 
 // ---------- color ----------
@@ -211,15 +250,17 @@ async function fetchPageText(url) {
       throw new Error('Not logged in. Run `bug login` first.');
     }
     assertIssueUrl(new URL(page.url()));
-    await page.waitForSelector('h1, [role="heading"]', { timeout: 30_000 });
+    await page.waitForSelector('h1, [role="heading"]', { timeout: 30_000 }).catch(() => {});
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
-    return await page.evaluate(() => {
+    const result = await page.evaluate(() => {
       const main = document.querySelector('main, [role="main"]') || document.body;
       return {
         url: location.href,
         text: (main.innerText || '').trim(),
       };
     });
+    assertIssueContentAvailable(result);
+    return result;
   });
 }
 
@@ -853,6 +894,7 @@ async function main() {
 }
 
 export {
+  assertIssueContentAvailable,
   findTestcaseKeyInIssue,
   parseArgs,
   parseIssue,

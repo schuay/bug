@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  assertIssueContentAvailable,
   findTestcaseKeyInIssue,
   parseIssue,
   parseTestcase,
@@ -19,7 +20,15 @@ test('resolves only known https issue URLs', () => {
   );
   assert.equal(
     resolveIssueUrl('https://issues.chromium.org/issues/505610970'),
-    'https://issues.chromium.org/issues/505610970',
+    'https://issuetracker.google.com/issues/505610970',
+  );
+  assert.equal(
+    resolveIssueUrl('https://issues.chromium.org/u/1/issues/506855825?pli=1'),
+    'https://issuetracker.google.com/issues/506855825',
+  );
+  assert.equal(
+    resolveIssueUrl('https://crbug.com/506855825'),
+    'https://issuetracker.google.com/issues/506855825',
   );
   assert.throws(
     () => resolveIssueUrl('http://issuetracker.google.com/issues/505610970'),
@@ -41,6 +50,10 @@ test('resolves ClusterFuzz targets without accepting lookalike hosts', () => {
     { kind: 'issue', issue: 'https://issuetracker.google.com/issues/505610970' },
   );
   assert.deepEqual(
+    resolveCfTarget('https://issues.chromium.org/u/1/issues/506855825?pli=1'),
+    { kind: 'issue', issue: 'https://issuetracker.google.com/issues/506855825' },
+  );
+  assert.deepEqual(
     resolveCfTarget('b/505610970'),
     { kind: 'issue', issue: '505610970' },
   );
@@ -51,6 +64,42 @@ test('resolves ClusterFuzz targets without accepting lookalike hosts', () => {
   assert.throws(
     () => resolveCfTarget('https://clusterfuzz.com.evil.test/testcase?key=5009280990216192'),
     /Unsupported ClusterFuzz target host/,
+  );
+});
+
+test('detects issue pages that did not expose authenticated content', () => {
+  assert.doesNotThrow(() => assertIssueContentAvailable({
+    url: 'https://issuetracker.google.com/issues/506855825',
+    text: '506855825\nVisibility\nIssue title\n',
+  }));
+  assert.throws(
+    () => assertIssueContentAvailable({
+      url: 'https://accounts.google.com/signin',
+      text: '',
+    }),
+    /Not logged in/,
+  );
+  assert.throws(
+    () => assertIssueContentAvailable({
+      url: 'https://issuetracker.google.com/issues/506855825',
+      text: [
+        'Issue 506855825',
+        'Access is denied to this issue',
+        'Access to this issue may be resolved by signing in.',
+        'Sign in',
+        'Privacy',
+        '|',
+        'Terms',
+      ].join('\n'),
+    }),
+    /Not logged in/,
+  );
+  assert.throws(
+    () => assertIssueContentAvailable({
+      url: 'https://issuetracker.google.com/issues/506855825',
+      text: 'Issues\nSearch\n',
+    }),
+    /Issue content not available/,
   );
 });
 
