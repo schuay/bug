@@ -81,7 +81,8 @@ testcase paths, ASAN environment options, and the full crash stacktrace.
 | `--format=json`       | Structured output. Always full content (verbosity is ignored).         |
 | `--format=text`       | Raw page text from the DOM walker. Useful for debugging the parser.    |
 | `-v`, `--verbose`     | Markdown only: include the omitted-by-default sections.                |
-| `--debug`             | Adds `rawText` to JSON, writes a screenshot to `/tmp/bug-cf-<key>.png`.|
+| `--debug`             | Adds `rawText` to JSON.                                                |
+| `--debug-screenshot=path` | Writes a ClusterFuzz page screenshot to the explicit path.        |
 | `--no-color`          | Disable ANSI color (also respects `NO_COLOR`).                         |
 | `-h`, `--help`        | Show usage.                                                            |
 
@@ -100,6 +101,19 @@ hit any backend API. Instead:
    stacktrace).
 4. The clusterfuzz reproducer is downloaded as a separate authenticated
    request via Playwright's request context (avoids CORS).
+
+Issue URLs are accepted only for Buganizer / Chromium issue hosts, and
+ClusterFuzz URLs are accepted only for `clusterfuzz.com`. Human-readable output
+has terminal control sequences stripped before printing.
+
+## Security notes
+
+- The persistent profile at `~/.config/bug-cli/profile` contains authenticated
+  Google session state. Treat it like a browser profile and do not share it.
+- `--debug` includes raw page text in JSON output. That can contain sensitive
+  issue or testcase content.
+- Screenshots are written only when `--debug-screenshot=path` is provided.
+  Choose a private path when capturing sensitive ClusterFuzz pages.
 
 ## Limitations
 
