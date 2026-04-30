@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Fetch Buganizer / issuetracker.google.com issues via authenticated headless Chromium.",
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
   "bin": {
     "bug": "./bug.js"
   },
