@@ -11,7 +11,7 @@ import {
   resolveIssueUrl,
   resolveTestcaseKey,
   sanitizeTerminalText,
-} from '../bug.js';
+} from '../bnz.js';
 
 test('resolves only known https issue URLs', () => {
   assert.equal(

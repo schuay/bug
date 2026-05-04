@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// bug — fetch issuetracker.google.com / Buganizer issues via authenticated headless Chromium.
+// bnz — fetch issuetracker.google.com / Buganizer issues via authenticated headless Chromium.
 //
 // Usage:
-//   bug login                              Open headed browser to log in (one-time).
-//   bug <id|url> [--format=fmt]            Fetch an issue. fmt = markdown (default) | json | text.
-//   bug <id|url> --debug                   Also include raw page text.
-//   bug --help
+//   bnz login                              Open headed browser to log in (one-time).
+//   bnz <id|url> [--format=fmt]            Fetch an issue. fmt = markdown (default) | json | text.
+//   bnz <id|url> --debug                   Also include raw page text.
+//   bnz --help
 
 import { chromium } from 'playwright';
 import { mkdirSync, realpathSync } from 'node:fs';
@@ -13,7 +13,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PROFILE_DIR = join(homedir(), '.config', 'bug-cli', 'profile');
+const PROFILE_DIR = join(homedir(), '.config', 'bnz', 'profile');
 const ISSUE_HOSTS = new Set([
   'b.corp.google.com',
   'crbug.com',
@@ -29,13 +29,13 @@ const TERMINAL_CONTROL_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
 // ---------- arg parsing ----------
 
 function usage() {
-  console.error(`bug — fetch issuetracker.google.com issues and clusterfuzz testcases
+  console.error(`bnz — fetch issuetracker.google.com issues and clusterfuzz testcases
 
 Usage:
-  bug login                              Open a headed browser to log in to issuetracker (one-time).
-  bug cf login                           Open a headed browser to log in to clusterfuzz (one-time).
-  bug <id|url> [--format=fmt]            Fetch an issue. fmt = markdown (default) | json | text.
-  bug cf <key|url|issue-id> [--format=fmt]
+  bnz login                              Open a headed browser to log in to issuetracker (one-time).
+  bnz cf login                           Open a headed browser to log in to clusterfuzz (one-time).
+  bnz <id|url> [--format=fmt]            Fetch an issue. fmt = markdown (default) | json | text.
+  bnz cf <key|url|issue-id> [--format=fmt]
                                          Fetch a clusterfuzz testcase. Accepts a testcase key/URL,
                                          or a Buganizer issue id/URL/b/<id> (the issue's description
                                          and comments are scanned for a clusterfuzz testcase link).
@@ -186,15 +186,15 @@ function looksLikeAuthPrompt(text) {
 
 function assertIssueContentAvailable({ url, text }) {
   if (/accounts\.google\.com/.test(url)) {
-    throw new Error('Not logged in. Run `bug login` first.');
+    throw new Error('Not logged in. Run `bnz login` first.');
   }
 
   const id = extractIdFromUrl(url);
   if (looksLikeIssueContent(text, id)) return;
   if (looksLikeAuthPrompt(text)) {
-    throw new Error('Not logged in. Run `bug login` first.');
+    throw new Error('Not logged in. Run `bnz login` first.');
   }
-  throw new Error('Issue content not available. Run `bug login` first or verify access to this issue.');
+  throw new Error('Issue content not available. Run `bnz login` first or verify access to this issue.');
 }
 
 // ---------- color ----------
@@ -247,7 +247,7 @@ async function fetchPageText(url) {
     const page = ctx.pages()[0] ?? await ctx.newPage();
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     if (/accounts\.google\.com/.test(page.url())) {
-      throw new Error('Not logged in. Run `bug login` first.');
+      throw new Error('Not logged in. Run `bnz login` first.');
     }
     assertIssueUrl(new URL(page.url()));
     await page.waitForSelector('h1, [role="heading"]', { timeout: 30_000 }).catch(() => {});
@@ -271,7 +271,7 @@ async function fetchTestcase(key, { debugScreenshot } = {}) {
     const page = ctx.pages()[0] ?? await ctx.newPage();
     await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
     if (/accounts\.google\.com/.test(page.url())) {
-      throw new Error('Not logged in. Run `bug cf login` first.');
+      throw new Error('Not logged in. Run `bnz cf login` first.');
     }
     await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
     // Give Polymer/shadow-DOM views a moment to paint after networkidle.

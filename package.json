@@ -1,5 +1,5 @@
 {
-  "name": "bug",
+  "name": "bnz",
   "version": "0.1.0",
   "description": "Fetch Buganizer / issuetracker.google.com issues via authenticated headless Chromium.",
   "type": "module",
@@ -7,7 +7,7 @@
     "test": "node --test"
   },
   "bin": {
-    "bug": "./bug.js"
+    "bnz": "./bnz.js"
   },
   "dependencies": {
     "playwright": "^1.48.0"

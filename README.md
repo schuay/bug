@@ -1,4 +1,4 @@
-# bug
+# bnz
 
 A small CLI that fetches authenticated content from
 [issuetracker.google.com](https://issuetracker.google.com) (Buganizer) and
@@ -11,23 +11,23 @@ issue contents into another tool gets old fast.
 ## Install
 
 ```sh
-git clone <this repo> ~/repos/bug
-cd ~/repos/bug
+git clone <this repo> ~/repos/bnz
+cd ~/repos/bnz
 npm install
 npx playwright install chromium
 ```
 
-Add `~/repos/bug` to your `PATH` so `bug` is on it (the repo ships a `bug`
-symlink to `bug.js`).
+Add `~/repos/bnz` to your `PATH` so `bnz` is on it (the repo ships a `bnz`
+symlink to `bnz.js`).
 
 ## First-time login
 
 Each service is a one-time headed-browser login. The session is stored in a
-persistent Playwright profile at `~/.config/bug-cli/profile`.
+persistent Playwright profile at `~/.config/bnz/profile`.
 
 ```sh
-bug login        # log into issuetracker.google.com
-bug cf login     # log into clusterfuzz.com
+bnz login        # log into issuetracker.google.com
+bnz cf login     # log into clusterfuzz.com
 ```
 
 Both services use Google SSO, so logging into one usually carries the other —
@@ -38,10 +38,10 @@ but running both is harmless and ensures cookies are warm.
 ### Fetch a Buganizer issue
 
 ```sh
-bug 505610970                 # markdown, compact
-bug 505610970 -v              # markdown, verbose (metadata-only comments + Changes lists)
-bug 505610970 --format=json   # structured JSON
-bug https://issuetracker.google.com/issues/505610970
+bnz 505610970                 # markdown, compact
+bnz 505610970 -v              # markdown, verbose (metadata-only comments + Changes lists)
+bnz 505610970 --format=json   # structured JSON
+bnz https://issuetracker.google.com/issues/505610970
 ```
 
 Compact markdown shows: title, status/type/priority/severity summary, sidebar
@@ -52,12 +52,12 @@ field-change lists.
 ### Fetch a ClusterFuzz testcase
 
 ```sh
-bug cf 5009280990216192       # by testcase key
-bug cf 505610970              # by Buganizer issue id (resolves the testcase link in the issue body)
-bug cf b/505610970
-bug cf https://clusterfuzz.com/testcase?key=5009280990216192
-bug cf 505610970 -v           # verbose
-bug cf 505610970 --format=json
+bnz cf 5009280990216192       # by testcase key
+bnz cf 505610970              # by Buganizer issue id (resolves the testcase link in the issue body)
+bnz cf b/505610970
+bnz cf https://clusterfuzz.com/testcase?key=5009280990216192
+bnz cf 505610970 -v           # verbose
+bnz cf 505610970 --format=json
 ```
 
 Numeric input is disambiguated by length: 14+ digits is treated as a testcase
@@ -92,7 +92,7 @@ Both sites are JavaScript SPAs (Polymer with shadow DOM), so we don't try to
 hit any backend API. Instead:
 
 1. Playwright launches Chromium against a persistent user-data dir, reusing
-   the cookies you established with `bug login` / `bug cf login`.
+   the cookies you established with `bnz login` / `bnz cf login`.
 2. We navigate, wait for the SPA to settle (`networkidle`), and walk the
    document — descending into open shadow roots — to produce a flat text
    representation.
@@ -109,7 +109,7 @@ terminal control sequences stripped before printing.
 
 ## Security notes
 
-- The persistent profile at `~/.config/bug-cli/profile` contains authenticated
+- The persistent profile at `~/.config/bnz/profile` contains authenticated
   Google session state. Treat it like a browser profile and do not share it.
 - `--debug` includes raw page text in JSON output. That can contain sensitive
   issue or testcase content.
@@ -128,12 +128,12 @@ terminal control sequences stripped before printing.
   Reproduces, Security selector, etc.) on the clusterfuzz page concatenate
   all options in DOM order. Those fields are intentionally omitted from the
   parsed output rather than presented misleadingly.
-- `bug login` / `bug cf login` require manual interaction. Cookie rotation
+- `bnz login` / `bnz cf login` require manual interaction. Cookie rotation
   may eventually invalidate the session; re-run the login if requests start
   redirecting to `accounts.google.com`.
 
 ## Files
 
-- `bug.js` — the entire CLI.
-- `bug` — symlink to `bug.js` (so the unsuffixed name is on `PATH`).
+- `bnz.js` — the entire CLI.
+- `bnz` — symlink to `bnz.js` (so the unsuffixed name is on `PATH`).
 - `package.json` — declares the Playwright dependency.
