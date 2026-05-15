@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  extractSearchHits, findTestcaseKeyInMarkdown, parseArgs, sanitizeFilename,
+  extractSearchHits, extractSearchRows, findTestcaseKeyInMarkdown,
+  parseArgs, parseSince, sanitizeFilename,
 } from '../bnz.js';
 import { sanitizeDeep, sanitizeTerminalText } from '../lib/render.js';
 
@@ -62,6 +63,41 @@ test('sanitizeFilename strips control + path chars', () => {
 test('sanitizeTerminalText strips ANSI + control', () => {
   const dirty = 'safe\x1b[31mred\x1b[0m\x1b]0;title\x07done\x08';
   assert.equal(sanitizeTerminalText(dirty), 'safereddone');
+});
+
+test('extractSearchRows parses the rich result table', () => {
+  const md = `## Issue search results
+
+**1 - 2** of **2**
+
+|     |     |     | P   | TYPE | TITLE | ASSIGNEE | STATUS | 7D VIEWS | ID  | LAST MODIFIED |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+|     |     |     | P1  | Vulnerability | [Stale cache hits in Maglev](https://issuetracker.google.com/issues/513350759) | verwaest@chromium.org | Assigned | 10  | [513350759](https://issuetracker.google.com/issues/513350759) | 2026-05-15 10:36 |
+|     |     |     | P2  | Bug | [Some other issue](https://issuetracker.google.com/issues/999) | \\-- | New | 0   | [999](https://issuetracker.google.com/issues/999) | 2026-04-01 09:00 |
+`;
+  const rows = extractSearchRows(md);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].id, '513350759');
+  assert.equal(rows[0].priority, 'P1');
+  assert.equal(rows[0].type, 'Vulnerability');
+  assert.equal(rows[0].title, 'Stale cache hits in Maglev');
+  assert.equal(rows[0].assignee, 'verwaest@chromium.org');
+  assert.equal(rows[0].status, 'Assigned');
+  assert.equal(rows[0].views7d, 10);
+  assert.equal(rows[0].modified, '2026-05-15 10:36');
+  // Second row has the escaped \-- assignee which we normalize to empty.
+  assert.equal(rows[1].assignee, '');
+  assert.equal(rows[1].views7d, 0);
+});
+
+test('parseSince accepts durations and ISO dates', () => {
+  const now = Date.now();
+  const sevenDays = parseSince('7d');
+  assert.ok(sevenDays <= now && sevenDays >= now - 8 * 86400_000);
+  const oneWeek = parseSince('1w');
+  assert.ok(oneWeek <= now && oneWeek >= now - 8 * 86400_000);
+  assert.equal(parseSince('2026-05-01'), Date.parse('2026-05-01'));
+  assert.throws(() => parseSince('garbage'), /Cannot parse --since/);
 });
 
 test('sanitizeDeep recurses', () => {

@@ -94,6 +94,9 @@ Flags:
   --full                                 Skip the chrome filter — dump the entire page, including
                                          top bar, side nav, FABs, and interactive buttons. By
                                          default the output is the issue body only.
+  --since=<dur>                          list: keep only hits modified since the duration ago.
+                                         e.g. --since=7d, --since=1w, --since=2026-05-01.
+  --max-pages=N                          list: cap pagination at N pages of 50 hits (default 30).
   --refresh                              Bypass the cache for this fetch (still writes back).
   --no-cache                             Disable cache reads and writes.
   --debug                                Include raw HTML in json output.
@@ -127,6 +130,8 @@ function parseArgs(argv) {
       args.downloadAttachments = a.slice('--download-attachments='.length);
     }
     else if (a.startsWith('--format=')) args.format = a.slice('--format='.length);
+    else if (a.startsWith('--since=')) args.since = a.slice('--since='.length);
+    else if (a.startsWith('--max-pages=')) args.maxPages = parseInt(a.slice('--max-pages='.length), 10);
     else args._.push(a);
   }
   if (!['markdown', 'json'].includes(args.format)) {
@@ -309,7 +314,8 @@ function renderTestcaseMarkdown(tc, args, colorEnabled) {
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
 }
 
-// Extract issue links from a search-results dump.
+// Extract issue links from a search-results dump (legacy / fallback for pages
+// that don't render the table).
 function extractSearchHits(markdown) {
   const re = /\[([^\]]+)\]\((https:\/\/issuetracker\.google\.com\/issues\/(\d+)(?:[^)]*)?)\)/g;
   const hits = [];
@@ -324,6 +330,52 @@ function extractSearchHits(markdown) {
   return hits;
 }
 
+// Parse the rich result table the search page renders. Columns are:
+//   _, _, _, P, TYPE, TITLE, ASSIGNEE, STATUS, 7D VIEWS, ID, LAST MODIFIED
+// Turndown emits "\\--" for "--" (the literal dash needs escaping at the
+// start of a markdown line); we strip that back to empty.
+function extractSearchRows(markdown) {
+  const rows = [];
+  const unescape = (s) => s === '\\--' ? '' : s;
+  // Markdown link with possible escaped brackets in the link text:
+  // [\[V8 Sandbox\] Potential ...](https://...)
+  const linkRe = /^\[((?:\\.|[^\]])+)\]\((https:[^)]+)\)$/;
+  const unescapeMd = (s) => s.replace(/\\([\\[\]_*`])/g, '$1');
+  for (const line of markdown.split('\n')) {
+    if (!line.startsWith('| ')) continue;
+    const cells = line.split('|').map((c) => c.trim());
+    if (cells.length < 12) continue;
+    const titleMatch = cells[6].match(linkRe);
+    const idMatch = cells[10].match(/^\[(\d+)\]\((https:[^)]+)\)$/);
+    if (!titleMatch || !idMatch) continue;
+    rows.push({
+      id: idMatch[1],
+      url: idMatch[2],
+      title: unescapeMd(titleMatch[1]),
+      priority: unescape(cells[4]),
+      type: unescape(cells[5]),
+      assignee: unescape(cells[7]),
+      status: unescape(cells[8]),
+      views7d: parseInt(cells[9], 10) || 0,
+      modified: unescape(cells[11]),
+    });
+  }
+  return rows;
+}
+
+// Parse --since=<duration|date> into an absolute millisecond timestamp.
+function parseSince(s) {
+  const m = String(s).match(/^(\d+)\s*([hdwm])$/i);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    const unit = { h: 3600_000, d: 86400_000, w: 604800_000, m: 2592000_000 };
+    return Date.now() - n * unit[m[2].toLowerCase()];
+  }
+  const t = Date.parse(s);
+  if (!Number.isNaN(t)) return t;
+  throw new Error(`Cannot parse --since=${s} (expected e.g. 7d, 1w, 2026-05-01)`);
+}
+
 function renderListMarkdown(search, args, colorEnabled) {
   const c = makeColors(colorEnabled);
   const data = sanitizeDeep(search);
@@ -331,9 +383,34 @@ function renderListMarkdown(search, args, colorEnabled) {
   out.push(header(c, `Search: ${data.query}`, data.searchUrl));
   if (!data.hits.length) {
     out.push(c.dim('(no results)'));
+    if (data.since && data.filteredOut) {
+      out.push(c.dim(`(${data.filteredOut} hits were filtered out by --since=${data.since})`));
+    }
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+  }
+  const summaryBits = [`${data.hits.length} result(s)`];
+  if (data.pagesFetched > 1) summaryBits.push(`${data.pagesFetched} pages`);
+  if (data.since) summaryBits.push(`since ${data.since}, ${data.filteredOut} filtered out`);
+  out.push(summaryBits.join('  ·  '));
+  out.push('');
+
+  // Detect whether we have the rich-row shape (anything beyond id/title/url).
+  const rich = data.hits.some((h) => h.priority || h.status || h.modified);
+  if (rich) {
+    out.push('| Pri | Type | Status | Title | Assignee | Modified |');
+    out.push('| --- | --- | --- | --- | --- | --- |');
+    for (const h of data.hits) {
+      const cells = [
+        h.priority || '',
+        h.type || '',
+        h.status || '',
+        `[${h.title}](${h.url})`,
+        h.assignee || '',
+        h.modified || '',
+      ].map((s) => String(s).replace(/\|/g, '\\|'));
+      out.push(`| ${cells.join(' | ')} |`);
+    }
   } else {
-    out.push(`${data.hits.length} result(s):`);
-    out.push('');
     for (const h of data.hits) {
       out.push(`- [${h.id}](${h.url}) - ${h.title}`);
     }
@@ -402,16 +479,39 @@ async function listCmd(session, inputs, args, colorEnabled) {
   const query = inputs.join(' ');
   const url = searchUrl(query);
   const cacheUrl = args.full ? url + '#full' : url;
-  const dump = await withCache(cacheUrl, args, () => {
-    const dumpOpts = {};
+
+  const cached = await withCache(cacheUrl, args, async () => {
+    const dumpOpts = { maxPages: args.maxPages || 30 };
     if (!args.full) Object.assign(dumpOpts, SEARCH_FOCUSED);
-    return session.dump(url, dumpOpts);
+    const { pages } = await session.dumpPaginated(url, dumpOpts);
+    const hits = [];
+    const seen = new Set();
+    for (const p of pages) {
+      // Prefer rich-table parsing; fall back to bare-link parsing if the page
+      // didn't render a table (empty results, error stub, etc.).
+      const rows = extractSearchRows(p.markdown);
+      const source = rows.length ? rows : extractSearchHits(p.markdown);
+      for (const r of source) {
+        if (seen.has(r.id)) continue;
+        seen.add(r.id);
+        hits.push(r);
+      }
+    }
+    return { query, searchUrl: url, hits, pagesFetched: pages.length };
   });
-  const hits = extractSearchHits(dump.markdown);
-  const result = { query, searchUrl: url, hits, markdown: dump.markdown };
+
+  let hits = cached.hits;
+  let filteredOut = 0;
+  if (args.since) {
+    const cutoff = parseSince(args.since);
+    const before = hits.length;
+    hits = hits.filter((h) => h.modified && Date.parse(h.modified) >= cutoff);
+    filteredOut = before - hits.length;
+  }
+  const result = { ...cached, hits, since: args.since || null, filteredOut };
 
   if (args.format === 'json') {
-    console.log(JSON.stringify({ ...result, hits }, null, 2));
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
   console.log(renderListMarkdown(result, args, colorEnabled));
@@ -465,8 +565,10 @@ async function main() {
 export {
   CLUSTERFUZZ_TESTCASE_RE,
   extractSearchHits,
+  extractSearchRows,
   findTestcaseKeyInMarkdown,
   parseArgs,
+  parseSince,
   sanitizeFilename,
 };
 
