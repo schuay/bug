@@ -54,6 +54,10 @@ const ISSUE_FOCUSED = {
     // Real user comment bodies live in <b-formatted-comment-presenter>, not
     // here.
     'b-issue-event-details',
+    // Issue-header noise that duplicates information already in our
+    // synthesized header / sidebar: a "Copy issue number" widget that
+    // renders the bare ID, and a visibility chip with no real text content.
+    'b-issue-id-picker', 'issue-chip-indicators', 'b-access-limits-chip',
   ],
 };
 const CF_FOCUSED = {
@@ -209,11 +213,41 @@ function sanitizeFilename(s) {
 
 // ---------- rendering ----------
 
+// Extract Status/Type/Priority/Severity from the compacted sidebar so we can
+// surface them in the synthesized header. Buganizer doesn't render a chip for
+// "New" status, so the status would otherwise only appear at the bottom.
+function summaryFromMarkdown(markdown) {
+  const get = (label) => {
+    const m = markdown.match(new RegExp('^- \\*\\*' + label + '\\*\\*:\\s*(.+)$', 'm'));
+    return m ? m[1].trim() : null;
+  };
+  return {
+    status: get('Status'),
+    type: get('Type'),
+    priority: get('Priority'),
+    severity: get('Severity'),
+  };
+}
+
 function renderIssueMarkdown(issue, args, colorEnabled) {
   const c = makeColors(colorEnabled);
   const data = sanitizeDeep(issue);
   const out = [];
   out.push(header(c, `Issue ${data.id}`, data.finalUrl || data.url));
+  const s = summaryFromMarkdown(data.markdown);
+  const summary = [
+    s.status && `${c.bold('Status')}: ${
+      /Fixed|Verified/i.test(s.status) ? c.green(s.status) :
+      /Assigned|New/i.test(s.status) ? c.yellow(s.status) : c.gray(s.status)}`,
+    s.type && `${c.bold('Type')}: ${s.type}`,
+    s.priority && `${c.bold('Priority')}: ${
+      /^P[01]$/.test(s.priority) ? c.red(s.priority) :
+      /^P2$/.test(s.priority) ? c.yellow(s.priority) : c.green(s.priority)}`,
+    s.severity && `${c.bold('Severity')}: ${
+      /^S[01]$/.test(s.severity) ? c.red(s.severity) :
+      /^S2$/.test(s.severity) ? c.yellow(s.severity) : c.green(s.severity)}`,
+  ].filter(Boolean).join('  ·  ');
+  if (summary) { out.push(summary); out.push(''); }
   out.push(data.markdown.trim());
 
   const apx = [];
