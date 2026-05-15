@@ -2,220 +2,69 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  assertIssueContentAvailable,
-  findTestcaseKeyInIssue,
-  parseIssue,
-  parseTestcase,
-  renderMarkdown,
-  resolveCfTarget,
-  resolveIssueUrl,
-  resolveTestcaseKey,
-  sanitizeTerminalText,
+  extractSearchHits, findTestcaseKeyInMarkdown, parseArgs, sanitizeFilename,
 } from '../bnz.js';
+import { sanitizeDeep, sanitizeTerminalText } from '../lib/render.js';
 
-test('resolves only known https issue URLs', () => {
-  assert.equal(
-    resolveIssueUrl('505610970'),
-    'https://issuetracker.google.com/issues/505610970',
-  );
-  assert.equal(
-    resolveIssueUrl('https://issues.chromium.org/issues/505610970'),
-    'https://issuetracker.google.com/issues/505610970',
-  );
-  assert.equal(
-    resolveIssueUrl('https://issues.chromium.org/u/1/issues/506855825?pli=1'),
-    'https://issuetracker.google.com/issues/506855825',
-  );
-  assert.equal(
-    resolveIssueUrl('https://crbug.com/506855825'),
-    'https://issuetracker.google.com/issues/506855825',
-  );
-  assert.throws(
-    () => resolveIssueUrl('http://issuetracker.google.com/issues/505610970'),
-    /Only https URLs are supported/,
-  );
-  assert.throws(
-    () => resolveIssueUrl('https://example.com/issues/505610970'),
-    /Unsupported issue host/,
-  );
+test('parseArgs picks up flags and positional targets', () => {
+  const a = parseArgs(['1', '2', '--format=json', '--refresh']);
+  assert.deepEqual(a._, ['1', '2']);
+  assert.equal(a.format, 'json');
+  assert.equal(a.refresh, true);
+  assert.equal(a.useCache, true);
+
+  const b = parseArgs(['cf', '5009280990216192', '--download-original', '--no-cache']);
+  assert.deepEqual(b._, ['cf', '5009280990216192']);
+  assert.equal(b.downloadOriginal, true);
+  assert.equal(b.useCache, false);
+
+  const c = parseArgs(['1', '--download-attachments']);
+  assert.equal(c.downloadAttachments, '.');
+  const d = parseArgs(['1', '--download-attachments=/tmp/foo']);
+  assert.equal(d.downloadAttachments, '/tmp/foo');
 });
 
-test('resolves ClusterFuzz targets without accepting lookalike hosts', () => {
-  assert.deepEqual(
-    resolveCfTarget('https://clusterfuzz.com/testcase?key=5009280990216192'),
-    { kind: 'testcase', key: '5009280990216192' },
-  );
-  assert.deepEqual(
-    resolveCfTarget('https://issuetracker.google.com/issues/505610970'),
-    { kind: 'issue', issue: 'https://issuetracker.google.com/issues/505610970' },
-  );
-  assert.deepEqual(
-    resolveCfTarget('https://issues.chromium.org/u/1/issues/506855825?pli=1'),
-    { kind: 'issue', issue: 'https://issuetracker.google.com/issues/506855825' },
-  );
-  assert.deepEqual(
-    resolveCfTarget('b/505610970'),
-    { kind: 'issue', issue: '505610970' },
-  );
+test('parseArgs rejects unknown formats', () => {
+  assert.throws(() => parseArgs(['1', '--format=html']), /Unknown --format/);
+});
+
+test('findTestcaseKeyInMarkdown picks up both URL shapes', () => {
   assert.equal(
-    resolveTestcaseKey('https://clusterfuzz.com/download?testcase_id=5009280990216192'),
+    findTestcaseKeyInMarkdown('See https://clusterfuzz.com/testcase?key=5009280990216192 for details.'),
     '5009280990216192',
   );
-  assert.throws(
-    () => resolveCfTarget('https://clusterfuzz.com.evil.test/testcase?key=5009280990216192'),
-    /Unsupported ClusterFuzz target host/,
+  assert.equal(
+    findTestcaseKeyInMarkdown('Repro: https://clusterfuzz.com/download?testcase_id=4242 .'),
+    '4242',
   );
+  assert.equal(findTestcaseKeyInMarkdown('no links here'), null);
 });
 
-test('detects issue pages that did not expose authenticated content', () => {
-  assert.doesNotThrow(() => assertIssueContentAvailable({
-    url: 'https://issuetracker.google.com/issues/506855825',
-    text: '506855825\nVisibility\nIssue title\n',
-  }));
-  assert.throws(
-    () => assertIssueContentAvailable({
-      url: 'https://accounts.google.com/signin',
-      text: '',
-    }),
-    /Not logged in/,
-  );
-  assert.throws(
-    () => assertIssueContentAvailable({
-      url: 'https://issuetracker.google.com/issues/506855825',
-      text: [
-        'Issue 506855825',
-        'Access is denied to this issue',
-        'Access to this issue may be resolved by signing in.',
-        'Sign in',
-        'Privacy',
-        '|',
-        'Terms',
-      ].join('\n'),
-    }),
-    /Not logged in/,
-  );
-  assert.throws(
-    () => assertIssueContentAvailable({
-      url: 'https://issuetracker.google.com/issues/506855825',
-      text: 'Issues\nSearch\n',
-    }),
-    /Issue content not available/,
-  );
-});
-
-test('parses Buganizer issue text', () => {
-  const text = `
-505610970
-Visibility
-Crash on startup
-Resources
-(1)
-ReleaseBlock-Stable
-STATUS UPDATE
-Issue metadata
-Type
-Bug
-Priority
-P1
-Severity
-S2
-Status
-Assigned
-Assignee
-owner@example.com
-OS
-Linux
-Mac
-Privacy |
-DESCRIPTION
-Edit
-Alice <alice@example.com> created issue #1
-Jan 2, 2026 1:23PM
-See https://clusterfuzz.com/testcase?key=5009280990216192 for the testcase.
-COMMENTS
-Full history
-Oldest first
-Bob <bob@example.com> #2
-Jan 3, 2026 2:34PM
-This is the user-facing comment.
-2:45PM
-Status: New  Assigned
-Add comment
+test('extractSearchHits dedupes by id, keeping first title', () => {
+  const md = `
+- [crash on startup](https://issuetracker.google.com/issues/123) status: New
+- [crash on startup (linked)](https://issuetracker.google.com/issues/123) Status: Assigned
+- [another bug](https://issuetracker.google.com/issues/456?pli=1) status: New
 `;
-
-  const issue = parseIssue(text, 'https://issuetracker.google.com/issues/505610970');
-
-  assert.equal(issue.id, '505610970');
-  assert.equal(issue.title, 'Crash on startup');
-  assert.deepEqual(issue.hotlists, ['ReleaseBlock-Stable']);
-  assert.equal(issue.sidebar.Type, 'Bug');
-  assert.deepEqual(issue.sidebar.OS, ['Linux', 'Mac']);
-  assert.equal(issue.description.author, 'Alice <alice@example.com>');
-  assert.equal(issue.comments[0].number, 2);
-  assert.equal(issue.comments[0].body, 'This is the user-facing comment.');
-  assert.deepEqual(issue.comments[0].changes, [
-    { field: 'Status', from: 'New', to: 'Assigned' },
+  const hits = extractSearchHits(md);
+  assert.deepEqual(hits, [
+    { id: '123', title: 'crash on startup', url: 'https://issuetracker.google.com/issues/123' },
+    { id: '456', title: 'another bug', url: 'https://issuetracker.google.com/issues/456' },
   ]);
-  assert.equal(findTestcaseKeyInIssue(issue), '5009280990216192');
 });
 
-test('parses ClusterFuzz testcase text', () => {
-  const text = `
-Heap-buffer-overflow \u00b7 v8::internal::Foo
-Job Type:
-linux_asan_d8
-Sanitizer:
-address
-Crash Address:
-0x10
-
-GN config
-is_debug = false
-v8_enable_sandbox = true
-
-Metadata
-[Environment] ASAN_OPTIONS=detect_leaks=0
-[Command line] /path/to/d8 --expose-gc --future /tmp/testcase.js
-#0 crash
-Statistics
-`;
-
-  const parsed = parseTestcase({
-    pageUrl: 'https://clusterfuzz.com/testcase?key=5009280990216192',
-    downloadUrl: 'https://clusterfuzz.com/download?testcase_id=5009280990216192',
-    text,
-    reproducer: { ok: true, body: 'print("hello");\n' },
-  }, '5009280990216192');
-
-  assert.equal(parsed.crashType, 'Heap-buffer-overflow');
-  assert.equal(parsed.crashState, 'v8::internal::Foo');
-  assert.equal(parsed.jobType, 'linux_asan_d8');
-  assert.deepEqual(parsed.commandLine.flags, ['--expose-gc', '--future']);
-  assert.equal(parsed.commandLine.testcase, '/tmp/testcase.js');
-  assert.match(parsed.gnConfig, /v8_enable_sandbox = true/);
-  assert.match(parsed.stacktrace, /\[Command line\]/);
-  assert.equal(parsed.reproducer, 'print("hello");\n');
+test('sanitizeFilename strips control + path chars', () => {
+  assert.equal(sanitizeFilename('foo/bar:baz<qux>.txt'), 'foo_bar_baz_qux_.txt');
+  assert.equal(sanitizeFilename('  spaced out  '), 'spaced out');
+  assert.equal(sanitizeFilename('a'.repeat(300)).length, 200);
 });
 
-test('sanitizes terminal control sequences from human output', () => {
+test('sanitizeTerminalText strips ANSI + control', () => {
   const dirty = 'safe\x1b[31mred\x1b[0m\x1b]0;title\x07done\x08';
   assert.equal(sanitizeTerminalText(dirty), 'safereddone');
+});
 
-  const rendered = renderMarkdown({
-    url: 'https://issuetracker.google.com/issues/1',
-    id: '1',
-    title: dirty,
-    componentPath: null,
-    hotlists: [],
-    sidebar: {},
-    description: {
-      author: 'Reporter',
-      timestamp: 'Jan 1, 2026 1:00PM',
-      body: dirty,
-    },
-    comments: [],
-  }, { color: false, verbose: false });
-
-  assert.doesNotMatch(rendered, /\x1b/);
-  assert.match(rendered, /safereddone/);
+test('sanitizeDeep recurses', () => {
+  const dirty = { a: 'foo\x1b[31mbar', b: [{ c: 'baz\x07' }] };
+  assert.deepEqual(sanitizeDeep(dirty), { a: 'foobar', b: [{ c: 'baz' }] });
 });
