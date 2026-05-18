@@ -505,7 +505,11 @@ async function listCmd(session, inputs, args, colorEnabled) {
   if (args.since) {
     const cutoff = parseSince(args.since);
     const before = hits.length;
-    hits = hits.filter((h) => h.modified && Date.parse(h.modified) >= cutoff);
+    hits = hits.filter((h) => {
+      if (!h.modified) return false;
+      const t = Date.parse(h.modified.replace(/(\d)(AM|PM)/i, '$1 $2'));
+      return Number.isFinite(t) && t >= cutoff;
+    });
     filteredOut = before - hits.length;
   }
   const result = { ...cached, hits, since: args.since || null, filteredOut };
